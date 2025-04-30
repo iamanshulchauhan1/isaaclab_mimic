@@ -5,7 +5,6 @@ echo "(run_singularity.py): Called on compute node from current isaaclab directo
 #==
 # Helper functions
 #==
-
 setup_directories() {
     # Check and create directories
     for dir in \
@@ -24,11 +23,9 @@ setup_directories() {
     done
 }
 
-
 #==
 # Main
 #==
-
 
 # get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
@@ -37,46 +34,102 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 source $SCRIPT_DIR/.env.cluster
 source $SCRIPT_DIR/../.env.base
 
-# make sure that all directories exists in cache directory
+# initialize environment modules if available
+if [ -f /etc/profile.d/modules.sh ]; then
+    source /etc/profile.d/modules.sh
+elif [ -f /usr/share/Modules/init/bash ]; then
+    source /usr/share/Modules/init/bash
+fi
+
+# load apptainer/singularity modules if provided by the cluster
+if command -v module &> /dev/null; then
+    module load apptainer || true
+    module load singularity || true
+fi
+
+# debug: print PATH and locate binaries
+echo "[DEBUG] PATH=$PATH"
+echo "[DEBUG] which apptainer: $(command -v apptainer || echo 'not found')"
+echo "[DEBUG] which singularity: $(command -v singularity || echo 'not found')"
+
+# Ensure TMPDIR exists (for non-scheduler environments)
+# if [ -z "$TMPDIR" ]; then
+#     TMPDIR=$(mktemp -d)
+#     echo "[INFO] TMPDIR was empty, using $TMPDIR"
+# fi
+
+# Make sure your pre‑exported TMPDIR actually exists and log it
+mkdir -p "$TMPDIR"
+echo "[INFO] Using TMPDIR=$TMPDIR"
+
+
+
+# Detect container runtime, allowing override via CONTAINER_RUNTIME
+if [ -n "$CONTAINER_RUNTIME" ] && command -v "$CONTAINER_RUNTIME" &> /dev/null; then
+    SINGULARITY_BIN="$CONTAINER_RUNTIME"
+elif [ -x "/usr/bin/apptainer" ]; then
+    SINGULARITY_BIN="/usr/bin/apptainer"
+elif [ -x "/usr/local/bin/apptainer" ]; then
+    SINGULARITY_BIN="/usr/local/bin/apptainer"
+elif command -v apptainer &> /dev/null; then
+    SINGULARITY_BIN=apptainer
+elif [ -x "/usr/bin/singularity" ]; then
+    SINGULARITY_BIN="/usr/bin/singularity"
+elif command -v singularity &> /dev/null; then
+    SINGULARITY_BIN=singularity
+else
+    echo "[ERROR] No container runtime found. Tried CONTAINER_RUNTIME, absolute paths, apptainer, and singularity." >&2
+    exit 1
+fi
+
+# make sure that all directories exist in cache directory
 setup_directories
-# copy all cache files
-cp -r $CLUSTER_ISAAC_SIM_CACHE_DIR $TMPDIR
+
+# copy all cache files into a subfolder for rsync
+mkdir -p "$TMPDIR/docker-isaac-sim"
+cp -r "$CLUSTER_ISAAC_SIM_CACHE_DIR"/. "$TMPDIR/docker-isaac-sim/"
 
 # make sure logs directory exists (in the permanent isaaclab directory)
 mkdir -p "$CLUSTER_ISAACLAB_DIR/logs"
 touch "$CLUSTER_ISAACLAB_DIR/logs/.keep"
 
 # copy the temporary isaaclab directory with the latest changes to the compute node
-cp -r $1 $TMPDIR
+cp -r "$1" "$TMPDIR"
 # Get the directory name
 dir_name=$(basename "$1")
 
-# copy container to the compute node
-tar -xf $CLUSTER_SIF_PATH/$2.tar  -C $TMPDIR
+# unpack the SIF tarball into TMPDIR
+tar -xf "$CLUSTER_SIF_PATH/$2.tar" -C "$TMPDIR"
 
-# execute command in singularity container
-# NOTE: ISAACLAB_PATH is normally set in `isaaclab.sh` but we directly call the isaac-sim python because we sync the entire
-# Isaac Lab directory to the compute node and remote the symbolic link to isaac-sim
-singularity exec \
-    -B $TMPDIR/docker-isaac-sim/cache/kit:${DOCKER_ISAACSIM_ROOT_PATH}/kit/cache:rw \
-    -B $TMPDIR/docker-isaac-sim/cache/ov:${DOCKER_USER_HOME}/.cache/ov:rw \
-    -B $TMPDIR/docker-isaac-sim/cache/pip:${DOCKER_USER_HOME}/.cache/pip:rw \
-    -B $TMPDIR/docker-isaac-sim/cache/glcache:${DOCKER_USER_HOME}/.cache/nvidia/GLCache:rw \
-    -B $TMPDIR/docker-isaac-sim/cache/computecache:${DOCKER_USER_HOME}/.nv/ComputeCache:rw \
-    -B $TMPDIR/docker-isaac-sim/logs:${DOCKER_USER_HOME}/.nvidia-omniverse/logs:rw \
-    -B $TMPDIR/docker-isaac-sim/data:${DOCKER_USER_HOME}/.local/share/ov/data:rw \
-    -B $TMPDIR/docker-isaac-sim/documents:${DOCKER_USER_HOME}/Documents:rw \
-    -B $TMPDIR/$dir_name:/workspace/isaaclab:rw \
-    -B $CLUSTER_ISAACLAB_DIR/logs:/workspace/isaaclab/logs:rw \
-    --nv --writable --containall $TMPDIR/$2.sif \
-    bash -c "export ISAACLAB_PATH=/workspace/isaaclab && cd /workspace/isaaclab && /isaac-sim/python.sh ${CLUSTER_PYTHON_EXECUTABLE} ${@:3}"
+# make sure logs directory exists (in the permanent isaaclab directory)
+mkdir -p "$CLUSTER_ISAACLAB_DIR/logs"
+touch   "$CLUSTER_ISAACLAB_DIR/logs/.keep"
+
+# make sure outputs directory exists (for Hydra / experiment outputs)
+mkdir -p "$CLUSTER_ISAACLAB_DIR/outputs"
+touch   "$CLUSTER_ISAACLAB_DIR/outputs/.keep"
+
+
+# execute command in container
+# NOTE: ISAACLAB_PATH is normally set in isaaclab.sh but we directly call the isaac-sim python
+"$SINGULARITY_BIN" exec \
+    -B "$TMPDIR/docker-isaac-sim/cache/kit:${DOCKER_ISAACSIM_ROOT_PATH}/kit/cache":rw \
+    -B "$TMPDIR/docker-isaac-sim/cache/ov:${DOCKER_USER_HOME}/.cache/ov":rw \
+    -B "$TMPDIR/docker-isaac-sim/cache/pip:${DOCKER_USER_HOME}/.cache/pip":rw \
+    -B "$TMPDIR/docker-isaac-sim/cache/glcache:${DOCKER_USER_HOME}/.cache/nvidia/GLCache":rw \
+    -B "$TMPDIR/docker-isaac-sim/cache/computecache:${DOCKER_USER_HOME}/.nv/ComputeCache":rw \
+    -B "$TMPDIR/docker-isaac-sim/logs:${DOCKER_USER_HOME}/.nvidia-omniverse/logs":rw \
+    -B "$TMPDIR/docker-isaac-sim/data:${DOCKER_USER_HOME}/.local/share/ov/data":rw \
+    -B "$TMPDIR/docker-isaac-sim/documents:${DOCKER_USER_HOME}/Documents":rw \
+    -B "$TMPDIR/$dir_name:/workspace/isaaclab":rw \
+    -B "$CLUSTER_ISAACLAB_DIR/logs:/workspace/isaaclab/logs":rw \
+    -B "$CLUSTER_ISAACLAB_DIR/outputs:/workspace/isaaclab/outputs":rw \
+    --nv --writable --containall "$TMPDIR/$2.sif" \
+    bash -c 'export ISAACLAB_PATH=/workspace/isaaclab && \
+             cd /workspace/isaaclab && \
+             exec /isaac-sim/python.sh "$@"' _ "${CLUSTER_PYTHON_EXECUTABLE}" "${@:3}"
 
 # copy resulting cache files back to host
-rsync -azPv $TMPDIR/docker-isaac-sim $CLUSTER_ISAAC_SIM_CACHE_DIR/..
-
-# if defined, remove the temporary isaaclab directory pushed when the job was submitted
-if $REMOVE_CODE_COPY_AFTER_JOB; then
-    rm -rf $1
-fi
+rsync -azPv "$TMPDIR/docker-isaac-sim" "$CLUSTER_ISAAC_SIM_CACHE_DIR/.."
 
 echo "(run_singularity.py): Return"

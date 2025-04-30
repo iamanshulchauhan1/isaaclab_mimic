@@ -87,7 +87,7 @@ import omni.log
 import omni.ui as ui
 
 # Additional Isaac Lab imports that can only be imported after the simulator is running
-from isaaclab.devices import OpenXRDevice, Se3Keyboard, Se3SpaceMouse
+from isaaclab.devices import OpenXRDevice, Se3Gamepad, Se3Keyboard, Se3SpaceMouse
 
 import isaaclab_mimic.envs  # noqa: F401
 from isaaclab_mimic.ui.instruction_display import InstructionDisplay, show_subtask_instructions
@@ -294,6 +294,14 @@ def main():
             return Se3Keyboard(pos_sensitivity=0.2, rot_sensitivity=0.5)
         elif device_name == "spacemouse":
             return Se3SpaceMouse(pos_sensitivity=0.2, rot_sensitivity=0.5)
+        elif device_name == "gamepad":
+            from carb.input import GamepadInput
+
+            device = Se3Gamepad(pos_sensitivity=0.2, rot_sensitivity=0.5)
+            device.add_callback(GamepadInput.Y, reset_recording_instance)
+            device.add_callback(GamepadInput.X, start_recording_instance)
+            device.add_callback(GamepadInput.B, stop_recording_instance)
+            return device
         elif "dualhandtracking_abs" in device_name and "GR1T2" in env.cfg.env_name:
             # Create GR1T2 retargeter with desired configuration
             gr1t2_retargeter = GR1T2Retargeter(

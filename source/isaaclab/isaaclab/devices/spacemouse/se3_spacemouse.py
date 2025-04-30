@@ -118,11 +118,21 @@ class Se3SpaceMouse(DeviceBase):
         found = False
         # implement a timeout for device search
         for _ in range(5):
+            print("Searching for HID devices...")
             for device in hid.enumerate():
-                if (
-                    device["product_string"] == "SpaceMouse Compact"
-                    or device["product_string"] == "SpaceMouse Wireless"
-                ):
+                if device.get("manufacturer_string") == "3Dconnexion":
+                    print("=" * 40)
+                    print("Device Info:")
+                    for k, v in device.items():
+                        print(f"{k}: {v}")
+
+            for device in hid.enumerate():
+                # print(f"Found device: {device.get('manufacturer_string')} - {device.get('product_string')}")
+                if "3Dconnexion" in device["product_string"] and "Receiver" in device["product_string"]:
+                    # if (
+                    #     device["product_string"] == "SpaceMouse Compact"
+                    #     or device["product_string"] == "SpaceMouse Wireless"
+                    # ):
                     # set found flag
                     found = True
                     vendor_id = device["vendor_id"]
