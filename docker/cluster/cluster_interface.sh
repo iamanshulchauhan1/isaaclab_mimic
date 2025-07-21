@@ -162,8 +162,6 @@ case $command in
 
         current_datetime=$(date +"%Y%m%d_%H%M%S")
         CLUSTER_ISAACLAB_DIR="${CLUSTER_ISAACLAB_DIR}_${current_datetime}"
-
-        # 🧠 RECOMMENDED: set CLUSTER_LOGIN to use your ~/.ssh/config alias
         CLUSTER_LOGIN=gpu
 
         # ✅ Establish reusable SSH connection
