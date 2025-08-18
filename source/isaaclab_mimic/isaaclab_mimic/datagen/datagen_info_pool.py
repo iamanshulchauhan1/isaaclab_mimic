@@ -27,14 +27,14 @@ class DataGenInfoPool:
             asyncio_lock (asyncio.Lock or None): asyncio lock to use for thread safety
         """
         self._datagen_infos = []
-
+        self._dataset_file_path = None
         # Start and end step indices of each subtask in each episode for each eef
         self._subtask_boundaries: dict[str, list[list[tuple[int, int]]]] = {}
 
         self.env = env
         self.env_cfg = env_cfg
         self.device = device
-
+    
         self._asyncio_lock = asyncio_lock
 
         # Subtask termination infos for the given environment
@@ -173,10 +173,11 @@ class DataGenInfoPool:
             file_path (str): path to the dataset file
             select_demo_keys (str or None): keys of the demos to load
         """
+        self._dataset_file_path = file_path 
         dataset_file_handler = HDF5DatasetFileHandler()
         dataset_file_handler.open(file_path)
         episode_names = dataset_file_handler.get_episode_names()
-
+    
         if len(episode_names) == 0:
             return
 

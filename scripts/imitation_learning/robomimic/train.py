@@ -85,6 +85,51 @@ from robomimic.utils.log_utils import DataLogger, PrintLogger
 # Isaac Lab imports (needed so that environment is registered)
 import isaaclab_tasks  # noqa: F401
 import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
+import os, subprocess
+
+def configure_gpu(gpu_choice: str = "auto"):
+    """
+    gpu_choice: "auto" | "cpu" | "<index>"
+    - auto: pick a free-ish GPU using nvidia-smi (respects pre-set CUDA_VISIBLE_DEVICES)
+    - cpu : force CPU
+    - <index>: e.g., "1" to force that GPU
+    """
+    if gpu_choice == "cpu":
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        print("[GPU] Forced CPU mode.")
+        return
+
+    if os.environ.get("CUDA_VISIBLE_DEVICES") and gpu_choice == "auto":
+        print(f"[GPU] Respecting preset CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}")
+        return
+
+    if gpu_choice.isdigit():
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_choice
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        print(f"[GPU] Using GPU index {gpu_choice}")
+        return
+
+    # auto-pick
+    try:
+        q = subprocess.check_output([
+            "nvidia-smi",
+            "--query-gpu=index,memory.used,memory.total,utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ]).decode().strip().splitlines()
+        stats = []
+        for line in q:
+            idx, used, total, util = [x.strip() for x in line.split(",")]
+            used, total, util = float(used), float(total), float(util)
+            frac = used / max(total, 1.0)
+            stats.append((int(idx), frac, util))
+        # prefer <10% mem, else least utilization
+        lowmem = [s for s in stats if s[1] < 0.10]
+        pick = min(lowmem, key=lambda s: s[2])[0] if lowmem else min(stats, key=lambda s: s[2])[0]
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(pick)
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        print(f"[GPU] Auto-selected GPU {pick}")
+    except Exception as e:
+        print(f"[GPU] Auto-pick failed ({e}); proceeding with default device selection.")
 
 
 def normalize_hdf5_actions(config: Config, log_dir: str) -> str:
@@ -351,6 +396,8 @@ def main(args: argparse.Namespace):
         args: Command line arguments.
     """
     # load config
+    configure_gpu(args.gpu)
+
     if args.task is not None:
         # obtain the configuration entry point
         cfg_entry_point_key = f"robomimic_{args.algo}_cfg_entry_point"
@@ -407,6 +454,8 @@ def main(args: argparse.Namespace):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--gpu", type=str, default="auto",
+                    help="GPU choice: 'auto' | 'cpu' | '<index>' (e.g., '1')")
 
     # Experiment Name (for tensorboard, saving models, etc.)
     parser.add_argument(

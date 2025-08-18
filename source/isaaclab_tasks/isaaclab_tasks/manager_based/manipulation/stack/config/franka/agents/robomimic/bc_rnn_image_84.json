@@ -27,7 +27,7 @@
     },
     "train": {
         "data": null,
-        "num_data_workers": 4,
+        "num_data_workers": 64,
         "hdf5_cache_mode": "low_dim",
         "hdf5_use_swmr": true,
         "hdf5_load_next_obs": false,
@@ -45,7 +45,7 @@
         ],
         "goal_mode": null,
         "cuda": true,
-        "batch_size": 16,
+        "batch_size": 64,
         "num_epochs": 600,
         "seed": 101
     },

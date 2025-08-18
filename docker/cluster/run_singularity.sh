@@ -124,6 +124,7 @@ touch   "$CLUSTER_ISAACLAB_DIR/outputs/.keep"
     -B "$TMPDIR/$dir_name:/workspace/isaaclab":rw \
     -B "$CLUSTER_ISAACLAB_DIR/logs:/workspace/isaaclab/logs":rw \
     -B "$CLUSTER_ISAACLAB_DIR/outputs:/workspace/isaaclab/outputs":rw \
+    -B "$CLUSTER_ISAAC_SIM_CACHE_DIR/cache/ov:${DOCKER_USER_HOME}/.cache/ov:rw" \
     --nv --writable --containall "$TMPDIR/$2.sif" \
     bash -c 'export ISAACLAB_PATH=/workspace/isaaclab && \
              cd /workspace/isaaclab && \

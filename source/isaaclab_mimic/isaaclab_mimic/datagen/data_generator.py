@@ -22,8 +22,60 @@ from isaaclab.managers import TerminationTermCfg
 from isaaclab_mimic.datagen.datagen_info import DatagenInfo
 from isaaclab_mimic.datagen.selection_strategy import make_selection_strategy
 from isaaclab_mimic.datagen.waypoint import MultiWaypoint, Waypoint, WaypointSequence, WaypointTrajectory
-
 from .datagen_info_pool import DataGenInfoPool
+
+import numpy as np
+def compute_and_filter_dynamics(eef_pos_buffer, action_buffer, thresholds: dict, hz=20.0) -> bool:
+    import numpy as np
+
+    if len(eef_pos_buffer) < 5 or len(action_buffer) < 5:
+        print("[RealtimeFilter] Not enough data to compute dynamics.")
+        return True  # Accept by default if not enough data
+
+    dt = 1.0 / hz
+
+    eef_array = np.stack(eef_pos_buffer)                  # [T, 3]
+    action_array = np.stack(action_buffer)     # [T, A-1]
+
+    # === EEF Dynamics ===
+    vel_eef = np.diff(eef_array, axis=0) / dt
+    acc_eef = np.diff(vel_eef, axis=0) / dt
+    jerk_eef = np.diff(acc_eef, axis=0) / dt
+
+    vel_eef_max = np.max(np.linalg.norm(vel_eef, axis=1))
+    acc_eef_max = np.max(np.linalg.norm(acc_eef, axis=1))
+    jerk_eef_max = np.max(np.linalg.norm(jerk_eef, axis=1))
+
+    # === Action/Joint Dynamics ===
+    vel_act = np.diff(action_array, axis=0) / dt
+    acc_act = np.diff(vel_act, axis=0) / dt
+    jerk_act = np.diff(acc_act, axis=0) / dt
+
+    vel_act_max = np.max(np.linalg.norm(vel_act, axis=1))
+    acc_act_max = np.max(np.linalg.norm(acc_act, axis=1))
+    jerk_act_max = np.max(np.linalg.norm(jerk_act, axis=1))
+    # print(f"[RealtimeFilter] EEF Vel: {vel_eef_max:.4f}, Acc: {acc_eef_max:.4f}, Jerk: {jerk_eef_max:.4f}")
+    # print(f"[RealtimeFilter] Action Vel: {vel_act_max:.4f}, Acc: {acc_act_max:.4f}, Jerk: {jerk_act_max:.4f}")
+    # === Compare against thresholds ===
+    if (
+    #     vel_eef_max > thresholds["eef_max_velocity"] or \
+    #    acc_eef_max > thresholds["eef_max_acceleration"] or \
+       jerk_eef_max > thresholds["eef_max_jerk"]
+    ):
+        print("[FILTER]  EEF threshold violated.")
+        return False
+
+    if (
+    #     vel_act_max > thresholds["joint_max_velocity"] or \
+    #    acc_act_max > thresholds["joint_max_acceleration"] or \
+    #    jerk_act_max > thresholds["joint_max_jerk"]
+    ):
+        print("[FILTER]  Joint/action threshold violated.")
+        return False
+
+    return True
+
+
 
 
 def transform_source_data_segment_using_delta_object_pose(
@@ -592,13 +644,16 @@ class DataGenerator:
         runtime_subtask_constraints_dict = {}
         for subtask_constraint in self.env_cfg.task_constraint_configs:
             runtime_subtask_constraints_dict.update(subtask_constraint.generate_runtime_subtask_constraints())
-
+        
+        num_envs = self.env.num_envs
         # save generated data in these variables
         generated_states = []
         generated_obs = []
         generated_actions = []
         generated_success = False
-
+        self.eef_pos_buffer = {i: [] for i in range(self.env.num_envs)}
+        self.action_buffer = {i: [] for i in range(self.env.num_envs)}
+        step = 0
         # some eef-specific state variables used during generation
         current_eef_selected_src_demo_indices = {}
         current_eef_subtask_trajectories = {}
@@ -707,6 +762,73 @@ class DataGenerator:
                 env_id=env_id,
                 env_action_queue=env_action_queue,
             )
+            num_envs = self.env.num_envs
+
+            all_envs_eef_pos = exec_results["observations"][0]["policy"]["eef_pos"]    # Shape: [num_envs, 3]
+            all_envs_actions = exec_results["observations"][0]["policy"]["joint_pos"][:, :7]  # Shape: [num_envs, 7]
+
+            # ## CHANGED: Index the tensors to get data ONLY for the CURRENT env_id ##
+            eef_pos = all_envs_eef_pos[env_id]      # Shape: [3]
+            actions = all_envs_actions[env_id]    # Shape: [7]
+
+            # Append the single-environment numpy array to the correct buffer
+            self.eef_pos_buffer[env_id].append(eef_pos.cpu().numpy())
+            self.action_buffer[env_id].append(actions.cpu().numpy())
+            
+            step += 1
+            # print(self.eef_pos_buffer[env_id][-1], env_id)
+            # print(self.action_buffer[env_id][-1], env_id)
+            thresholds = self.env.demo_thresholds
+            # ## CHANGED: Check length and call filter using the instance buffer ##
+            if len(self.eef_pos_buffer[env_id]) >= 5 and len(self.action_buffer[env_id]) >= 5:
+                if not compute_and_filter_dynamics(self.eef_pos_buffer[env_id], self.action_buffer[env_id], thresholds=thresholds):
+                    # print(f"[RealtimeFilter]  Rejected demo in env {env_id}")
+                    self.env.recorder_manager.cancel_episode(env_id_tensor)
+                    
+                    # ## CHANGED: Clear the buffer for this specific env_id on rejection ##
+                    self.eef_pos_buffer[env_id] = []
+                    self.action_buffer[env_id] = []
+                    
+                    await env_reset_queue.put(env_id)
+                    await env_reset_queue.join()
+                    return {
+                        "initial_state": new_initial_state,
+                        "states": [],
+                        "observations": [],
+                        "actions": [],
+                        "success": False,
+                    }
+
+
+            # try:
+            #     # Extract EEF positions
+            #     eef_pos_t = exec_results["observations"][0]["policy"]["eef_pos"]  # Tensor [N, 3]
+            #     for pos in eef_pos_t.cpu().numpy():
+            #         eef_pos_buffer.append(pos)
+
+            #     # Run the filter only if we have enough data
+            #     if len(eef_pos_buffer) >= 5:
+            #         eef_array = np.stack(eef_pos_buffer)  # Shape: (T, 3)
+
+            #         # Run smoothness-based demo filter
+            #         if not demo_filter(eef_array):  # <=== use your function directly
+            #             print(f"[RealtimeFilter] ❌ Smoothness filter rejected demo in env {env_id}")
+
+            #             # Cancel and exit early
+            #             self.env.recorder_manager.cancel_episode(env_id_tensor)
+            #             await env_reset_queue.put(env_id)
+            #             await env_reset_queue.join()
+            #             return {
+            #                 "initial_state": new_initial_state,
+            #                 "states": [],
+            #                 "observations": [],
+            #                 "actions": [],
+            #                 "success": False,
+            #             }
+
+            # except Exception as e:
+            #     print(f"[RealtimeFilter] ❌ Failed to evaluate smoothness filter: {e}")
+
 
             # update execution state buffers
             if len(exec_results["states"]) > 0:
@@ -714,6 +836,7 @@ class DataGenerator:
                 generated_obs.extend(exec_results["observations"])
                 generated_actions.extend(exec_results["actions"])
                 generated_success = generated_success or exec_results["success"]
+
 
             for eef_name in self.env_cfg.subtask_configs.keys():
                 current_eef_subtask_step_indices[eef_name] += 1
@@ -772,7 +895,8 @@ class DataGenerator:
         )
         if export_demo:
             self.env.recorder_manager.export_episodes(env_id_tensor)
-
+        self.eef_pos_buffer[env_id] = []
+        self.action_buffer[env_id] = []
         results = dict(
             initial_state=new_initial_state,
             states=generated_states,

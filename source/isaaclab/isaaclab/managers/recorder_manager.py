@@ -22,6 +22,7 @@ from .manager_term_cfg import RecorderTermCfg
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
+from isaaclab.utils.datasets.episode_data import EpisodeData 
 
 class DatasetExportMode(enum.IntEnum):
     """The mode to handle episode exports."""
@@ -361,6 +362,7 @@ class RecorderManager(ManagerBase):
         for term in self._terms.values():
             key, value = term.record_post_step()
             self.add_to_episodes(key, value)
+    from collections.abc import Sequence  # for the type hint
 
     def record_pre_reset(self, env_ids: Sequence[int] | None, force_export_or_skip=None) -> None:
         """Trigger recorder terms for pre-reset functions.
@@ -368,7 +370,6 @@ class RecorderManager(ManagerBase):
         Args:
             env_ids: The environment ids in which a reset is triggered.
         """
-        # Do nothing if no active recorder terms are provided
         if len(self.active_terms) == 0:
             return
 
@@ -378,8 +379,10 @@ class RecorderManager(ManagerBase):
             env_ids = env_ids.tolist()
 
         for term in self._terms.values():
-            key, value = term.record_pre_reset(env_ids)
-            self.add_to_episodes(key, value, env_ids)
+            ret = term.record_pre_reset(env_ids)
+            if ret is not None:
+                key, value = ret
+                self.add_to_episodes(key, value, env_ids)
 
         # Set task success values for the relevant episodes
         success_results = torch.zeros(len(env_ids), dtype=bool, device=self._env.device)
@@ -426,8 +429,22 @@ class RecorderManager(ManagerBase):
         need_to_flush = False
         for env_id in env_ids:
             if env_id in self._episodes and not self._episodes[env_id].is_empty():
-                episode_succeeded = self._episodes[env_id].success
+                # Check success first
+                base_success = self._episodes[env_id].success
+                # passes_filter = True
+                # # print(bool(hasattr(self._env, "demo_filter")))
+                # # print(bool(hasattr(self._env, "demo_thresholds")))
+                # if base_success and hasattr(self._env, "demo_filter") and hasattr(self._env, "demo_thresholds"):
+                #     try:
+                #         result = self._episodes[env_id].data  # contains 'actions'
+                #         passes_filter = self._env.demo_filter(result, self._env.demo_thresholds)
+                #     except Exception as e:
+                #         print(f"[RecorderManager] Demo filter error for env {env_id}: {e}")
+                #         passes_filter = False
+                # print(f"[RecorderManager] Exporting episode for env {env_id} with success={base_success} and passes_filter={passes_filter}")
+                episode_succeeded = base_success
                 target_dataset_file_handler = None
+
                 if (self.cfg.dataset_export_mode == DatasetExportMode.EXPORT_ALL) or (
                     self.cfg.dataset_export_mode == DatasetExportMode.EXPORT_SUCCEEDED_ONLY and episode_succeeded
                 ):
@@ -437,16 +454,21 @@ class RecorderManager(ManagerBase):
                         target_dataset_file_handler = self._dataset_file_handler
                     else:
                         target_dataset_file_handler = self._failed_episode_dataset_file_handler
+
                 if target_dataset_file_handler is not None:
                     target_dataset_file_handler.write_episode(self._episodes[env_id])
                     need_to_flush = True
+
                 # Update episode count
                 if episode_succeeded:
                     self._exported_successful_episode_count[env_id] = (
                         self._exported_successful_episode_count.get(env_id, 0) + 1
                     )
                 else:
-                    self._exported_failed_episode_count[env_id] = self._exported_failed_episode_count.get(env_id, 0) + 1
+                    self._exported_failed_episode_count[env_id] = (
+                        self._exported_failed_episode_count.get(env_id, 0) + 1
+                    )
+
             # Reset the episode buffer for the given environment after export
             self._episodes[env_id] = EpisodeData()
 
@@ -455,10 +477,9 @@ class RecorderManager(ManagerBase):
                 self._dataset_file_handler.flush()
             if self._failed_episode_dataset_file_handler is not None:
                 self._failed_episode_dataset_file_handler.flush()
-
-    """
-    Helper functions.
-    """
+        """
+        Helper functions.
+        """
 
     def _prepare_terms(self):
         """Prepares a list of recorder terms."""
@@ -494,3 +515,11 @@ class RecorderManager(ManagerBase):
             # add term name and parameters
             self._term_names.append(term_name)
             self._terms[term_name] = term
+
+    def cancel_episode(self, env_id: int):
+        """Cancels the episode recording for the given environment."""
+        if env_id in self._episodes:
+            del self._episodes[env_id]
+        self._episodes[env_id] = EpisodeData()
+        self._episodes[env_id].env_id = env_id
+        print(f"[RecorderManager] Episode cancelled and reset for env {env_id}")

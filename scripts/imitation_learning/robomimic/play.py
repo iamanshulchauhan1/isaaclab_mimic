@@ -157,7 +157,7 @@ def main():
 
     # Create environment
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
-
+    print(args_cli.seed, env.seed(args_cli.seed))
     # Set seed
     torch.manual_seed(args_cli.seed)
     env.seed(args_cli.seed)

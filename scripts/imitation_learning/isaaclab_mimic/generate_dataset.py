@@ -110,6 +110,7 @@ def main():
         )
 
     # set seed for generation
+   
     random.seed(env.cfg.datagen_config.seed)
     np.random.seed(env.cfg.datagen_config.seed)
     torch.manual_seed(env.cfg.datagen_config.seed)

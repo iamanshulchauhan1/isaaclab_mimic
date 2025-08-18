@@ -17,7 +17,10 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 #==
 # Functions
 #==
+: "${CLUSTER_ISAAC_SIM_CACHE_DIR:=$HOME/project/shared_caches/isaac_sim}"
 
+# --- ADD: ensure the cache dir exists on the remote side ---
+ssh $SSH_OPTIONS "$CLUSTER_LOGIN" bash -lc "mkdir -p '$CLUSTER_ISAAC_SIM_CACHE_DIR/cache/ov/texturecache' && chmod -R u+rwX '$CLUSTER_ISAAC_SIM_CACHE_DIR'"
 # Print warnings in red
 display_warning() {
     echo -e "\033[31mWARNING: $1\033[0m"

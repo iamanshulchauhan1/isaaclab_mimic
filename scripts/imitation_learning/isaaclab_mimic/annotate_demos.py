@@ -99,11 +99,28 @@ def mark_subtask_cb():
     marked_subtask_action_indices.append(current_action_index)
     print(f"Marked a subtask signal at action index: {current_action_index}")
 
-
+import time
 class PreStepDatagenInfoRecorder(RecorderTerm):
-    """Recorder term that records the datagen info data in each step."""
+    """Recorder term that logs object/eef pose and timing info at each step."""
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self._start_time = None
+        self._last_timestamp = None
+
+    def record_pre_reset(self, env_ids=None):
+        """Called before environment reset. Initializes timing."""
+        self._start_time = time.time()
+        self._last_timestamp = self._start_time
+        return None  # This is important for compatibility with RecorderManager
 
     def record_pre_step(self):
+        """Called before each environment step. Returns data with timing info."""
+        current_time = time.time()
+        elapsed_time = current_time - self._start_time
+        step_dt = current_time - self._last_timestamp
+        self._last_timestamp = current_time
+
         eef_pose_dict = {}
         for eef_name in self._env.cfg.subtask_configs.keys():
             eef_pose_dict[eef_name] = self._env.get_robot_eef_pose(eef_name=eef_name)
@@ -112,6 +129,8 @@ class PreStepDatagenInfoRecorder(RecorderTerm):
             "object_pose": self._env.get_object_poses(),
             "eef_pose": eef_pose_dict,
             "target_eef_pose": self._env.action_to_target_eef_pose(self._env.action_manager.action),
+            "timestamp": torch.tensor([elapsed_time], dtype=torch.float32),     # ✅ wrapped
+            "step_duration": torch.tensor([step_dt], dtype=torch.float32), 
         }
         return "obs/datagen_info", datagen_info
 
